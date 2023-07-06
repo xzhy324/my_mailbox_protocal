@@ -1,7 +1,9 @@
 """
 CSR寄存器格式:
-"{irq} {head} {tail}"
+"{irq} {rx_head} {rx_tail} {tx_head} {tx_tail}"
 irq = 1 表示有中断,立刻触发中断处理逻辑receive
+rx_*: 自己的接收buffer的头尾指针，自己不能够修改
+tx_*: 对方的接收buffer的头尾指针，自己可以修改
 
 采用空1个位置的循环FIFO,约定如下
 1. 首尾指针相等,表示buffer为空
@@ -20,7 +22,7 @@ from queue import Queue
 from time import sleep
 
 GREEN = '\033[92m'
-GREEN = '\033[91m'
+RED = '\033[91m'
 BLUE = '\033[34m'
 END_COLOR = '\033[0m'
 
@@ -89,7 +91,7 @@ class Entity:
     def to_upper_module(self, msg):
         print(f"{self.name} received:" + BLUE + f"{msg}" + END_COLOR)
         self.recv_msgs.append(msg)
-        if len(self.recv_msgs) == 6:
+        if len(self.recv_msgs) == 8:
             print(f"{self.name} finally received:" + GREEN + f"{self.recv_msgs}" + END_COLOR)
         
     # 从对方buffer的tail位置开始，将msg在模M意义下顺序写入对方的buffer
@@ -158,16 +160,17 @@ if __name__ == "__main__":
     
     REQUEST_PER_SECOND = 100000  # 每秒发送的消息数
     msg_from_2_to_1 = ["hello world, this is a long message and it's really l" + "o"*200 + "ng",
-                           "animals",
-                           "dog",
-                           "cat and Cat and cAt and caT and CAT" + " and cats"*60 + " Wow! So many cats!",
-                           "goodbye, world!"]
-    msg_from_1_to_2 = ["HELLO WORLD, THIS IS A LONG MESSAGE AND IT'S REALLY L" + "O"*200 + "NG",
-                       "ANIMALS",
-                       "DOG",
-                       "CAT AND CAT AND CAT AND CAT AND CAT" + " AND CATS"*60 + " WOW! SO MANY CATS!",
-                       "GOODBYE, WORLD!"]
-    #msg_from_1_to_2 = []
+                        "animals",
+                        "dog",
+                        "cat and Cat and cAt and caT and CAT" + " and cats"*60 + " Wow! So many cats!",
+                        "goodbye, world!",
+                        "hello world, this is a long message and it's really l" + "oO"*300 + "ng",]
+    # msg_from_1_to_2 = ["HELLO WORLD, THIS IS A LONG MESSAGE AND IT'S REALLY L" + "O"*200 + "NG",
+    #                    "ANIMALS",
+    #                    "DOG",
+    #                    "CAT AND CAT AND CAT AND CAT AND CAT" + " AND CATS"*60 + " WOW! SO MANY CATS!",
+    #                    "GOODBYE, WORLD!"]
+    msg_from_1_to_2 = []
 
     # Create two entities, each with a send queue and a receive queue
     entity1 = Entity("Entity1", send_irq=irq1, receive_irq=irq2,
