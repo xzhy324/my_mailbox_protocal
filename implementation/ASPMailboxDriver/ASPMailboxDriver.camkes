@@ -1,0 +1,26 @@
+
+
+import <ASPMailboxDriverInterface.camkes>;
+import <LoggerInterface.camkes>;
+
+component ASPMailboxDriver {
+  provides ASPMailboxAPI api;
+
+  // Mailbox registers
+  dataport Buf mmio_region;
+
+  // Global mailbox lock
+  has mutex api_mutex;
+
+  // Mailbox arrival semaphore
+  has semaphore rx_semaphore;
+
+  // Mailbox interrupts
+
+  consumes Interrupt rx_irq;
+
+  maybe uses LoggerInterface logger;
+
+  // Enable CantripOS CAmkES support.
+  attribute int cantripos = true;
+}
