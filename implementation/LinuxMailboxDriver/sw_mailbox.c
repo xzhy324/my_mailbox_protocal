@@ -47,19 +47,9 @@ static struct device *mailbox_device = NULL;
 static int mailbox_major = 0;
 static int mailbox_minor = 0;
 static volatile int mailbox_event = 0;
-// static char mailbox_buf[568];
-// static uint64_t count,max_msg;
-// struct kfifo_rec_ptr_2 mailbox_fifo;
 
-// struct kfifo mailbox_fifo;
 
-typedef struct
-{
-    uint64_t idx;
-    uint64_t val;
-} Msg;
-
-static DECLARE_KFIFO_PTR(mailbox_fifo, Msg);
+static DECLARE_KFIFO_PTR(mailbox_fifo, uint64_t);
 
 #define UINT64(addr, offset) ((uint64_t *)(size_t)(addr))[offset]
 
@@ -67,50 +57,38 @@ bool interrupt_halting = false;
 
 static irqreturn_t mailbox_interrupt(int irq, void *dev_id)
 {
+    printk("sw_mailbox: hearing irq!\n");
+    uint64_t receiver_mailbox_csr = readq(membase + A2CMAILBOX_CSR);
+    receiver_mailbox_csr &= 0x7fffffffffffffff;
+    receiver_mailbox_csr |= 0x8000000000000000;
+    writeq(receiver_mailbox_csr, membase + A2CMAILBOX_CSR); //开中断
 
-    // sbi_printf("interrupt\n");
-    /*****find valid message*****/
-    uint64_t mailbox_csr = readq(membase + C2AMAILBOX_CSR);
-    uint64_t mailbox_valid_flags = mailbox_csr & (~(1ull << 63));
-    /*****disable mailbox interrupt*****/
-    writeq(0, membase + C2AMAILBOX_CSR);
-    /*****read all pieces of message*****/
-    Msg msg;
+    uint64_t receive_info_reg = readq(membase + A2CMAILBOX_IR);
+    uint64_t send_info_reg = readq(membase + C2AMAILBOX_IR);
+    uint64_t rx_tail_from_receiver = (receive_info_reg & 0xff00) >> 8;
+    uint64_t rx_head_from_sender = send_info_reg & 0x00ff;
+
+    uint64_t msgs[62];
+    int msg_ptr = 0;
+    
+
+    int head = rx_head_from_sender;
+    while(head != rx_tail_from_receiver) {
+        msgs[msg_ptr] = readq(membase + A2CMAILBOX_BASE + head * 8);
+        head = (head + 1) % A2CMAILBOX_REG_NUM;
+        msg_ptr += 1;
+    }
+
+    printk("sw_mailbox: msg recv[");
     int i;
-    // sbi_printf("kfifo_avail before %d \n",kfifo_avail(&mailbox_fifo));
-    for (i = 0; mailbox_valid_flags != 0; i++)
-    {
+    for(i = 0; i<msg_ptr; ++i){
+        printk("%llx, ",msgs[i]);
+    }printk("]\n");
 
-        if (mailbox_valid_flags & 0x1ull)
-        {
-            if (kfifo_avail(&mailbox_fifo) > 0)
-            {
-                msg.idx = i;
-                msg.val = readq(membase + C2AMAILBOX_BASE + i * 8);
-                kfifo_put(&mailbox_fifo, msg);
-            }
-            else
-            {
-                printk("mailbox warning: receive buffer is full, message discarded");
-            }
-        }
-        mailbox_valid_flags = mailbox_valid_flags >> 1;
-    }
-    // sbi_printf("kfifo_avail after %d \n",kfifo_avail(&mailbox_fifo));
-
-    wake_up_interruptible(&mailbox_waitq);
-
-    if (kfifo_avail(&mailbox_fifo) >= 200)
-    {
-        // sbi_printf("*");
-        writeq(mailbox_csr, membase + C2AMAILBOX_CSR);
-    }
-    else
-    {
-        interrupt_halting = 1;
-        // sbi_printf("[x]");
-        writeq((mailbox_csr & (~(1ull << 63))), membase + C2AMAILBOX_CSR);
-    }
+    send_info_reg = readq(membase + C2AMAILBOX_IR);
+    send_info_reg &= 0xffffffffffffff00;
+    send_info_reg |= rx_tail_from_receiver;  //将head设置为原来的tail,即读出了所有内容
+    writeq(send_info_reg, membase + C2AMAILBOX_IR);
 
     return IRQ_HANDLED;
 }
@@ -153,10 +131,10 @@ static ssize_t mailbox_write(struct file *file, const char __user *buf, size_t s
         copy_from_user(msg, buf, size * sizeof(uint64_t));
         msg_ptr = 0; 
 
-        printk("from upper module:");
-        for(i=0;i<size;++i){
-            printk("%llx",msg[i]);
-        }printk("\n");
+        // printk("sw_mailbox: from upper module:[");
+        // for(i=0;i<size;++i){
+        //     printk("%llx ",msg[i]);
+        // }printk("]\n");
 
         while(msg_ptr != size) {
             uint64_t receiver_info_reg = readq(membase + C2AMAILBOX_IR);
@@ -234,7 +212,7 @@ static ssize_t mailbox_read(struct file *file, char __user *buf, size_t size, lo
 
     if (*offp == 0)
     {
-        msg_size = sizeof(Msg);
+        msg_size = sizeof(uint64_t);
         uint64_t n;
         n = min(size / msg_size, kfifo_len(&mailbox_fifo));
         len = n * msg_size;
@@ -422,11 +400,6 @@ static int __init mailbox_init(void)
     }
     printk("sw_mailbox: driver MSG buffer size %#d\n", kfifo_size(&mailbox_fifo));
 
-    // /*test sending msg*/
-    // Msg msg;
-    // msg.val = 0xaabbccddeeff1122;
-    // printk("sw_mailbox: sending msg=%lx", msg.val);
-    // writeq(msg.val, membase + 0);
 
     return 0;
 device_create_fail:
@@ -458,5 +431,5 @@ module_init(mailbox_init);
 module_exit(mailbox_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("LPN BYK YCC");
+MODULE_AUTHOR("LPN BYK YCC XZY");
 MODULE_DESCRIPTION("ASP mailbox");
