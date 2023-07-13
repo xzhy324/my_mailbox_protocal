@@ -48,7 +48,6 @@ static int mailbox_major = 0;
 static int mailbox_minor = 0;
 static volatile int mailbox_event = 0;
 
-
 static DECLARE_KFIFO_PTR(mailbox_fifo, uint64_t);
 
 #define UINT64(addr, offset) ((uint64_t *)(size_t)(addr))[offset]
@@ -57,11 +56,11 @@ bool interrupt_halting = false;
 
 static irqreturn_t mailbox_interrupt(int irq, void *dev_id)
 {
-    printk("sw_mailbox: hearing irq!\n");
+    //printk("sw_mailbox: hearing irq!\n");
     uint64_t receiver_mailbox_csr = readq(membase + A2CMAILBOX_CSR);
     receiver_mailbox_csr &= 0x7fffffffffffffff;
     receiver_mailbox_csr |= 0x8000000000000000;
-    writeq(receiver_mailbox_csr, membase + A2CMAILBOX_CSR); //开中断
+    writeq(receiver_mailbox_csr, membase + A2CMAILBOX_CSR); // 开中断
 
     uint64_t receive_info_reg = readq(membase + A2CMAILBOX_IR);
     uint64_t send_info_reg = readq(membase + C2AMAILBOX_IR);
@@ -70,24 +69,26 @@ static irqreturn_t mailbox_interrupt(int irq, void *dev_id)
 
     uint64_t msgs[62];
     int msg_ptr = 0;
-    
 
     int head = rx_head_from_sender;
-    while(head != rx_tail_from_receiver) {
+    while (head != rx_tail_from_receiver)
+    {
         msgs[msg_ptr] = readq(membase + A2CMAILBOX_BASE + head * 8);
         head = (head + 1) % A2CMAILBOX_REG_NUM;
         msg_ptr += 1;
     }
 
-    printk("sw_mailbox: msg recv[");
+    printk(KERN_CONT "sw_mailbox: msg recv[");
     int i;
-    for(i = 0; i<msg_ptr; ++i){
-        printk("%llx, ",msgs[i]);
-    }printk("]\n");
+    for (i = 0; i < msg_ptr; ++i)
+    {
+        printk(KERN_CONT "%llx, ", msgs[i]);
+    }
+    printk("]\n");
 
     send_info_reg = readq(membase + C2AMAILBOX_IR);
     send_info_reg &= 0xffffffffffffff00;
-    send_info_reg |= rx_tail_from_receiver;  //将head设置为原来的tail,即读出了所有内容
+    send_info_reg |= rx_tail_from_receiver; // 将head设置为原来的tail,即读出了所有内容
     writeq(send_info_reg, membase + C2AMAILBOX_IR);
 
     return IRQ_HANDLED;
@@ -98,93 +99,69 @@ static int mailbox_open(struct inode *inode, struct file *file)
     if (inode == NULL || file == NULL)
         return -1;
     printk("sw_mailbox: mailbox opened!\n");
-    writeq(0x7fffffffffffffff, membase + A2CMAILBOX_CSR);
-    kfifo_reset(&mailbox_fifo);
+    // writeq(0x7fffffffffffffff, membase + A2CMAILBOX_CSR);
+    // kfifo_reset(&mailbox_fifo);
     writeq(0xffffffffffffffff, membase + A2CMAILBOX_CSR);
     return 0;
 }
 
 static int mailbox_close(struct inode *inode, struct file *file)
 {
-    writeq(0x7fffffffffffffff, membase + A2CMAILBOX_CSR);
+    printk("sw_mailbox: mailbox closed!\n");
+    // writeq(0x7fffffffffffffff, membase + A2CMAILBOX_CSR);
     return 0;
 }
 
-//size:需要多少个寄存器
-static ssize_t mailbox_write(struct file *file, const char __user *buf, size_t size, loff_t *ppos)
+
+static ssize_t mailbox_write(struct file *file, const char __user *buf, size_t size/*消息占寄存器的数量*/, loff_t *ppos)
 {
     // sbi_printf("pos %lx\n",*ppos);
     if (*ppos == 0)
     {
         uint64_t msg[1024]; /*之后可以用一个kfifo代替，以容纳无限长的消息*/
-        int msg_ptr; //用于标识当前的msg发送到哪了
+        int msg_ptr;        // 用于标识当前的msg发送到哪了
         int i;
         uint64_t mailbox_csr;
         uint64_t mailbox_invalid_flags;
 
         mailbox_csr = readq(membase + C2AMAILBOX_CSR);
         mailbox_invalid_flags = mailbox_csr & (~(1ull << 63));
-        if (mailbox_invalid_flags != 0) //如果接收方关闭了中断使能，则不发送
+        if (mailbox_invalid_flags != 0) // 如果接收方关闭了中断使能，则不发送
             return 0;
 
-        
         copy_from_user(msg, buf, size * sizeof(uint64_t));
-        msg_ptr = 0; 
+        msg_ptr = 0;
 
-        // printk("sw_mailbox: from upper module:[");
-        // for(i=0;i<size;++i){
-        //     printk("%llx ",msg[i]);
-        // }printk("]\n");
-
-        while(msg_ptr != size) {
+        while (msg_ptr != size)
+        {
             uint64_t receiver_info_reg = readq(membase + C2AMAILBOX_IR);
             uint64_t sender_info_reg = readq(membase + A2CMAILBOX_IR);
-            int rx_tail_from_receiver =  (receiver_info_reg & 0xff00) >> 8;
-            int rx_head_from_sender =  sender_info_reg & 0x00ff;
+            int rx_tail_from_receiver = (receiver_info_reg & 0xff00) >> 8;
+            int rx_head_from_sender = sender_info_reg & 0x00ff;
             int valid_regs_num = C2AMAILBOX_REG_NUM - 1 -
-                (rx_tail_from_receiver - rx_head_from_sender + C2AMAILBOX_REG_NUM) % C2AMAILBOX_REG_NUM;
-            if(valid_regs_num > 0){
-                printk("valid regs are:%d\n",valid_regs_num);
-                if(valid_regs_num < size - msg_ptr) { //这个if简化为 regs_to_write = min(size - msg_ptr, valid_regs_num)
-                    for (i=0;i<valid_regs_num; ++i) {
-                        writeq(msg[msg_ptr+i], 
-                            membase + C2AMAILBOX_BASE + ((rx_tail_from_receiver + i)% C2AMAILBOX_REG_NUM)*8);
-                    }
-                    msg_ptr += valid_regs_num;
-                    rx_tail_from_receiver += valid_regs_num;
-                    rx_tail_from_receiver %= C2AMAILBOX_REG_NUM;
-                } else {
-                    int remain_regs = size - msg_ptr;
-                    for(i=0;i<remain_regs;++i) {
-                        printk("sw_mailnbox: writing %llx to reg_addr %d\n",msg[msg_ptr+i], C2AMAILBOX_BASE + ((rx_tail_from_receiver + i)% C2AMAILBOX_REG_NUM)*8);
-                        writeq(msg[msg_ptr+i], 
-                            membase + C2AMAILBOX_BASE + ((rx_tail_from_receiver + i)% C2AMAILBOX_REG_NUM)*8);
-                    }
-                    msg_ptr += remain_regs;
-                    rx_tail_from_receiver += remain_regs;
-                    rx_tail_from_receiver %= C2AMAILBOX_REG_NUM;
+                                 (rx_tail_from_receiver + C2AMAILBOX_REG_NUM - rx_head_from_sender) % C2AMAILBOX_REG_NUM;
+            if (valid_regs_num > 0)
+            {
+                printk("valid regs are:%d\n", valid_regs_num);
+                int regs_to_write = min(size - msg_ptr, valid_regs_num);
+                for (i = 0; i < regs_to_write; ++i)
+                {
+                    printk("sw_mailnbox: writing %llx to reg_addr %d\n", msg[msg_ptr + i], C2AMAILBOX_BASE + ((rx_tail_from_receiver + i) % C2AMAILBOX_REG_NUM) * 8);
+                    writeq(msg[msg_ptr + i],
+                           membase + C2AMAILBOX_BASE + ((rx_tail_from_receiver + i) % C2AMAILBOX_REG_NUM) * 8);
                 }
-
-                rx_tail_from_receiver <<= 8;//按格式还原
-                //printk("sw_mailbox: rx_tail_from_receiver %llx\n",rx_tail_from_receiver);
+                msg_ptr += regs_to_write;
+                rx_tail_from_receiver += regs_to_write;
+                rx_tail_from_receiver %= C2AMAILBOX_REG_NUM;
+                rx_tail_from_receiver <<= 8; // 按格式还原
                 receiver_info_reg = readq(membase + C2AMAILBOX_IR);
-                //printk("sw_mailbox: receiver_info_reg %llx\n",receiver_info_reg);
-                receiver_info_reg &= 0xffffffffffff00ff; //清空原本的tail指针
-                //printk("sw_mailbox: receiver_info_reg %llx\n",receiver_info_reg);
-                receiver_info_reg |= rx_tail_from_receiver; //置位新的tail指针
-                //printk("sw_mailbox: receiver_info_reg %llx\n",receiver_info_reg);
-                printk("sw_mailbox: writing %llx to asp's csr\n",receiver_info_reg);
-                writeq(receiver_info_reg, membase + C2AMAILBOX_IR); //将新指针信息更新到接收方InfoReg中
-                writeq(0xffffffffffffffff, membase+C2AMAILBOX_CSR);//触发中断
+                receiver_info_reg &= 0xffffffffffff00ff;    // 清空原本的tail指针
+                receiver_info_reg |= rx_tail_from_receiver; // 置位新的tail指针
+                printk("sw_mailbox: writing %llx to asp's csr\n", receiver_info_reg);
+                writeq(receiver_info_reg, membase + C2AMAILBOX_IR);   // 将新指针信息更新到接收方InfoReg中
+                writeq(0xffffffffffffffff, membase + C2AMAILBOX_CSR); // 触发中断
             }
         }
-
-
-
-        // int msg_idx = C2AMAILBOX_BASE + 0;
-        // printk("sw_mailbox: writing msg:%llx to mb's reg%d\n",msg, msg_idx);
-        // writeq(msg[0], membase + C2AMAILBOX_BASE + msg_idx * 8);
-        // writeq(0xffffffffffffffff, membase + C2AMAILBOX_CSR); //触发ASP侧中断
     }
     else if (*ppos == 1)
     {
@@ -339,7 +316,7 @@ static int __init mailbox_init(void)
     int ret;
     dev_t devno;
 
-    printk("sw_mailbox: mailbox 20230710 driver init...\n");
+    printk("sw_mailbox: mailbox 20230712 driver init...\n");
 
     platform_driver_register(&mailbox_driver);
 
@@ -400,6 +377,8 @@ static int __init mailbox_init(void)
     }
     printk("sw_mailbox: driver MSG buffer size %#d\n", kfifo_size(&mailbox_fifo));
 
+    // 在 platform_driver_register(&mailbox_driver); 这个函数中会调用mailbox_probe函数，初始化membase
+    writeq(0xffffffffffffffff, membase + A2CMAILBOX_CSR); // 使能linux接受区的中断
 
     return 0;
 device_create_fail:
